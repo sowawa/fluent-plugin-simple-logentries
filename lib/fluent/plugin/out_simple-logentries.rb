@@ -1,6 +1,7 @@
 require 'socket'
 require 'json'
 require 'openssl'
+require 'securerandom'
 
 class Fluent::SimpleLogentriesOutput < Fluent::BufferedOutput
   class ConnectionFailure < StandardError; end
@@ -10,9 +11,12 @@ class Fluent::SimpleLogentriesOutput < Fluent::BufferedOutput
   config_param :port,           :integer, :default => 20000
   config_param :protocol,       :string,  :default => 'tcp'
   config_param :max_retries,    :integer, :default => 3
+  config_param :append_tag,     :bool,    :default => true
   config_param :token,          :string
   SSL_HOST    = "api.logentries.com"
   NO_SSL_HOST = "data.logentries.com"
+  MAX_ENTRY_SIZE = 8192
+  SPLITED_ENTRY_SIZE = MAX_ENTRY_SIZE - 256
 
   def configure(conf)
     super
@@ -51,20 +55,42 @@ class Fluent::SimpleLogentriesOutput < Fluent::BufferedOutput
   end
 
   def write(chunk)
-    generate_tokens_list()
-    return unless @tokens.is_a? Hash
-
     chunk.msgpack_each do |tag, record|
       if record.is_a? Hash
-        send_logentries(@token, JSON.generate(record))
+        send_logentries(tag, record)
       end
     end
   end
 
-  def send_logentries(token, data)
+  def send_logentries(tag, record)
+    data = if @append_tag
+             record.merge({tag: tag})
+           else
+             record
+           end
+    jsonfied = JSON.generate(data)
+    if (data.member?(:messages) || data.member?('messages')) && jsonfied.length > MAX_ENTRY_SIZE
+      identifyer = SecureRandom.uuid
+      messages = if data.member?(:messages)
+                   data[:messages]
+                 elsif data.member?('messages')
+                   data['messages']
+                 end
+      data.delete(:messages) && data.delete('messages')
+      ([data] + split_messages(messages).map{|i| {messages: i}} ).each_with_index { |item, idx|
+        push(JSON.generate({sequence: idx, identifyer: identifyer}.merge(item)))
+      }
+    else
+      push(jsonfied)
+    end
+  rescue => e
+    log.warn "Could not push logs to Logentries. #{e.message}"
+  end
+
+  def push(data)
     retries = 0
     begin
-      client.write("#{token} #{data} \n")
+      client.write("#{@token} #{data} \n")
     rescue Errno::ECONNREFUSED, Errno::ETIMEDOUT => e
       if retries < @max_retries
         retries += 1
@@ -74,9 +100,15 @@ class Fluent::SimpleLogentriesOutput < Fluent::BufferedOutput
         retry
       end
       raise ConnectionFailure, "Could not push logs to Logentries after #{retries} retries. #{e.message}"
-    rescue Errno::EMSGSIZE
+    rescue Errno::EMSGSIZE => e
       log.warn "Could not push logs to Logentries. #{e.message}"
     end
   end
 
+  def split_messages(messages)
+    str_length = messages.length
+    return [messages] if SPLITED_ENTRY_SIZE > str_length
+    split_messages(messages[0..str_length/2]) +
+      split_messages(messages[(str_length/2)+1..str_length])
+  end
 end
