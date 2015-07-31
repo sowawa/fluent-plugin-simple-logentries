@@ -20,7 +20,6 @@ class Fluent::SimpleLogentriesOutput < Fluent::BufferedOutput
 
   def configure(conf)
     super
-    @last_edit = Time.at(0)
   end
 
   def start
@@ -76,7 +75,8 @@ class Fluent::SimpleLogentriesOutput < Fluent::BufferedOutput
                  elsif data.member?('messages')
                    data['messages']
                  end
-      data.delete(:messages) && data.delete('messages')
+      data.delete(:messages)
+      data.delete('messages')
       ([data] + split_messages(messages).map{|i| {messages: i}} ).each_with_index { |item, idx|
         push(JSON.generate({sequence: idx, identifyer: identifyer}.merge(item)))
       }
@@ -106,9 +106,26 @@ class Fluent::SimpleLogentriesOutput < Fluent::BufferedOutput
   end
 
   def split_messages(messages)
-    str_length = messages.length
-    return [messages] if SPLITED_ENTRY_SIZE > str_length
-    split_messages(messages[0..str_length/2]) +
-      split_messages(messages[(str_length/2)+1..str_length])
+    if messages.is_a? String
+      str_length = messages.length
+      return [messages] if SPLITED_ENTRY_SIZE > str_length
+      return split_messages(messages[0..str_length/2-1]) +
+        split_messages(messages[(str_length/2)..str_length])
+    elsif messages.is_a? Array
+      arr_length = messages.length
+      jsonfied = JSON.generate(messages)
+      str_length = jsonfied.length
+      return [messages] if SPLITED_ENTRY_SIZE > str_length
+      if arr_length == 1
+        split_messages(messages[0])
+      else
+        return split_messages(messages[0..arr_length/2-1]) +
+          split_messages(messages[(arr_length/2)..arr_length])
+      end
+    elsif messages.is_a? Hash
+      return split_messages(JSON.generate(messages))
+    else
+      raise TypeError, "Can't split unknown data type."
+    end
   end
 end
