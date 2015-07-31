@@ -1,0 +1,8 @@
+<source>
+  type forward
+</source>
+<match rails.**>
+  type simple-logentries
+  token 01b442e1-b695-4b07-bce3-71bb885a1a0e
+  flush_interval 1s
+</match>
