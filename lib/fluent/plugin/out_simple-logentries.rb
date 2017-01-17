@@ -85,6 +85,14 @@ class Fluent::SimpleLogentriesOutput < Fluent::BufferedOutput
     end
   rescue => e
     log.warn "Could not push logs to Logentries. #{e.message}"
+    if retries < @max_retries
+      retries += 1
+      @_socket = nil
+      log.warn "Could not push logs to Logentries, resetting connection and trying again. #{e.message}"
+      sleep 5**retries
+      retry
+    end
+    raise ConnectionFailure, "Could not push logs to Logentries after #{retries} retries. #{e.message}"
   end
 
   def push(data)
